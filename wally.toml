@@ -1,0 +1,11 @@
+[package]
+name = "tpc9000/cachenet"
+version = "0.0.1"
+registry = "https://github.com/UpliftGames/wally-index"
+realm = "shared"
+license = "MIT"
+authors = ["tpc9000"]
+
+[dependencies]
+TypeGuard = "tpc9000/typeguard@6.0.0-alpha.3"
+XSignal = "tpc9000/xsignal@3.0.1"

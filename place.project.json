@@ -1,0 +1,20 @@
+{
+    "emitLegacyScripts": false,
+	"name": "CacheNet",
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedFirst": {
+			"$ignoreUnknownInstances": true,
+			"$className": "ReplicatedFirst",
+			"$path": "Packages",
+			"CacheNet": {
+				"$path": "src"
+			}
+		},
+		"ServerScriptService": {
+			"$ignoreUnknownInstances": true,
+			"$className": "ServerScriptService",
+			"$path": "src/TestServerScripts"
+		}
+	}
+}
