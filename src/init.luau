@@ -35,21 +35,21 @@ else
     CustomRemotes.Parent = ReplicatedStorage
 end
 
+local RemoteHooks = {}
+
 local DynamicUInt = TypeGuard.Number():Integer():Dynamic():Positive()
 local InstanceRef = TypeGuard.Object({
     _Ref = DynamicUInt;
 }):Strict()
-local RemoteHooks = {}
-
-local VALID_CACHE_TYPE = TypeGuard.Or(
+local ValidTypeCache = TypeGuard.Or(
     TypeGuard.String():MinLength(4):MaxLength(128),
     TypeGuard.Instance()
 )
-local BUFFER = TypeGuard.Buffer()
-local PACKAGE = TypeGuard.Object({
-    CacheDifferences = BUFFER;
-    Payload = BUFFER;
-})
+local Buffer = TypeGuard.Buffer()
+local Package = TypeGuard.Object({
+    CacheDifferences = Buffer;
+    Payload = Buffer;
+}):Strict()
 
 local RemoteWrapper = {}
 RemoteWrapper.__index = RemoteWrapper
@@ -79,7 +79,7 @@ function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker, C
     end
 
     local Event = XSignal.XSignal.new()
-    local ValidCacheType = (Config and Config.ValidCacheType or VALID_CACHE_TYPE)
+    local ValidCacheType = (Config and Config.ValidCacheType or ValidTypeCache)
 
     local self = setmetatable({
         _SerializableValidCacheType = TypeGuard.Array(TypeGuard.Or(ValidCacheType, DynamicUInt, InstanceRef));
@@ -113,7 +113,7 @@ function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker, C
 end
 
 function RemoteWrapper:_ReceiveEvent(Data, Refs, SenderNodeState, SenderID)
-    local Pair = PACKAGE:Deserialize(Data)
+    local Pair = Package:Deserialize(Data)
         local CacheDifferences = self._SerializableValidCacheType:Deserialize(Pair.CacheDifferences)
         local Payload = Pair.Payload
 
@@ -229,7 +229,7 @@ function RemoteWrapper:_SerializePackage(Data: any, Recipient: string): (buffer,
 
     table.clear(Original)
 
-    return PACKAGE:Serialize({
+    return Package:Serialize({
         CacheDifferences = self._SerializableValidCacheType:Serialize(CacheDifferences);
         Payload = Payload;
     }), InstanceRefs
