@@ -181,12 +181,7 @@ function RemoteWrapper:_GetOrCreateNodeState(Recipient: string)
             local Value = ReceivingCacheDifferences[ReceivingCacheDifferencesIncrementalIndex]
 
             if (Value) then
-                if (type(Value) == "number") then
-                    Index = Value
-                else
-                    Index = GetIndexFromValue(Cache, Value)
-                end
-
+                Index = if (type(Value) == "number") then Value else GetIndexFromValue(Cache, Value)
                 ReceivingCacheDifferencesIncrementalIndex += 1
             end
 

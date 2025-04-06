@@ -1,7 +1,7 @@
 --- Creates a simple value cache where every cached value persists
 --- until this cache is garbage collected. Not recommended unless
---- performance is seriously necessary and there are a fixed number
---- of cacheable values.
+--- performance is seriously necessary and all cacheable values are
+--- known / not dynamically generated. 
 local PermanentCache = {}
 PermanentCache.__index = PermanentCache
 
