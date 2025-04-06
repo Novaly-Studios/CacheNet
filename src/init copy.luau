@@ -11,8 +11,6 @@ local Caches = script.Caches
     local LRUCache = require(Caches.LeastRecentlyUsed)
 
 local TypeGuard = require(script.Parent.TypeGuard)
-    type SignatureTypeChecker = TypeGuard.SignatureTypeChecker
-
 local XSignal = require(script.Parent.XSignal)
 
 local ActivePlayers = {} do
@@ -35,21 +33,12 @@ else
     CustomRemotes.Parent = ReplicatedStorage
 end
 
-local DynamicUInt = TypeGuard.Number():Integer():Dynamic():Positive()
-local InstanceRef = TypeGuard.Object({
-    _Ref = DynamicUInt;
-}):Strict()
 local RemoteHooks = {}
 
 local VALID_CACHE_TYPE = TypeGuard.Or(
     TypeGuard.String():MinLength(4):MaxLength(128),
     TypeGuard.Instance()
 )
-local BUFFER = TypeGuard.Buffer()
-local PACKAGE = TypeGuard.Object({
-    CacheDifferences = BUFFER;
-    Payload = BUFFER;
-})
 
 local RemoteWrapper = {}
 RemoteWrapper.__index = RemoteWrapper
@@ -61,13 +50,16 @@ RemoteWrapper.Caches = {
 }
 
 type Config = {
-    ValidCacheType: SignatureTypeChecker?;
     SerializeType: ("Byte" | "Bit")?;
     CacheClass: (typeof(CircularCache.new(1)) | typeof(LRUCache.new(1)))?;
     CacheSize: number?;
+
+    ValidCacheTypes: {
+        [string]: ((Value: any) -> (boolean));
+    }?;
 }
 
-function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker, Config: Config?)
+function RemoteWrapper.new(RemoteID: string, Definition: TypeGuard.SignatureTypeChecker, Config: Config?)
     local RemoteEvent
 
     if (IsClient) then
@@ -78,12 +70,10 @@ function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker, C
         RemoteEvent.Parent = CustomRemotes
     end
 
-    local Event = XSignal.XSignal.new()
-    local ValidCacheType = (Config and Config.ValidCacheType or VALID_CACHE_TYPE)
+    local Event = XSignal.PureXSignal.new()
 
     local self = setmetatable({
-        _SerializableValidCacheType = TypeGuard.Array(TypeGuard.Or(ValidCacheType, DynamicUInt, InstanceRef));
-        _ValidCacheType = ValidCacheType;
+        _ValidCacheType = (Config and Config.ValidCacheTypes or VALID_CACHE_TYPE);
         _SerializeType = (Config and Config.SerializeType or "Bit");
         _NodeToState = {};
         _RemoteEvent = RemoteEvent;
@@ -100,11 +90,11 @@ function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker, C
         self._NodeToState[Player.Name] = nil
     end)
 
-    self._RemoteConnection = (IsClient and RemoteEvent.OnClientEvent:Connect(function(Package, Refs)
-        self:_ReceiveEvent(Package, Refs, self:_GetOrCreateNodeState("Server"))
-    end) or RemoteEvent.OnServerEvent:Connect(function(Player, Package, Refs)
+    self._RemoteConnection = (IsClient and RemoteEvent.OnClientEvent:Connect(function(Data, CacheDifferences)
+        self:_ReceiveEvent(Data, self:_GetOrCreateNodeState("Server"), CacheDifferences)
+    end) or RemoteEvent.OnServerEvent:Connect(function(Player, Data, CacheDifferences)
         local SenderID = Player.Name
-        self:_ReceiveEvent(Package, Refs, self:_GetOrCreateNodeState(SenderID), SenderID)
+        self:_ReceiveEvent(Data, self:_GetOrCreateNodeState(SenderID), CacheDifferences, SenderID)
     end))
 
     assert(RemoteHooks[RemoteID] == nil, `Remote ID {RemoteID} already exists`)
@@ -112,37 +102,19 @@ function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker, C
     return self
 end
 
-function RemoteWrapper:_ReceiveEvent(Data, Refs, SenderNodeState, SenderID)
-    local Pair = PACKAGE:Deserialize(Data)
-        local CacheDifferences = self._SerializableValidCacheType:Deserialize(Pair.CacheDifferences)
-        local Payload = Pair.Payload
-
-    for Key, Value in CacheDifferences do
-        if (typeof(Value) ~= "table") then
-            continue
-        end
-
-        local Ref = Value._Ref
-
-        if (not Ref) then
-            continue
-        end
-
-        CacheDifferences[Key] = Refs[Ref]
-    end
-
+function RemoteWrapper:_ReceiveEvent(Data, SenderNodeState, CacheDifferences, SenderID)
     SenderNodeState.BeginReceive(CacheDifferences)
-    Payload = SenderNodeState.Definition:Deserialize(Payload, self._SerializeType)
+    Data = SenderNodeState.Definition:Deserialize(Data, self._SerializeType)
 
     if (IsClient) then
-        self.OnClientEvent:Fire(Payload)
+        self.OnClientEvent:Fire(Data)
         return
     end
 
     local Player = Players:FindFirstChild(SenderID)
 
     if (Player) then
-        self.OnServerEvent:Fire(Player, Payload)
+        self.OnServerEvent:Fire(Player, Data)
     end
 end
 
@@ -155,9 +127,7 @@ function RemoteWrapper:_GetOrCreateNodeState(Recipient: string)
         local ReceivingCacheDifferences
         local CacheDifferences = {}
 
-        local ValidCacheType = self._ValidCacheType
-            local _Check = ValidCacheType._Check
-
+        local ValidCacheTypes = self._ValidCacheTypes
         local CacheClass = self._CacheClass
             local Cache = CacheClass.new(self._CacheSize)
                 local GetIndexFromValue = Cache.GetIndexFromValue
@@ -165,16 +135,25 @@ function RemoteWrapper:_GetOrCreateNodeState(Recipient: string)
 
         local function _GetIndexFromValue(Value)
             -- Check to see if the type can be cached.
-            if (_Check(ValidCacheType, Value)) then
-                -- Register in cache, then in cache differences if it's the time the value has been encountered
-                -- in the state of the cache. Also want to record simple refs to other attempted calls for values
-                -- which were already encountered to avoid desync.
-                local Index, FirstEncounter = GetIndexFromValue(Cache, Value)
-                table.insert(CacheDifferences, if (FirstEncounter) then Value else Index)
-                return Index
+            local Type = typeof(Value)
+            local Validator = ValidCacheTypes[Type]
+
+            if (not Validator:_Check(Value)) then
+                return nil
             end
 
-            return nil
+            -- Register in cache, then in cache differences if it's the time the value has been encountered
+            -- in the state of the cache. Also want to record simple refs to other attempted calls for values
+            -- which were already encountered to avoid desync.
+            local Index, FirstEncounter = GetIndexFromValue(Cache, Value)
+
+            if (FirstEncounter) then
+                table.insert(CacheDifferences, Value)
+            else
+                table.insert(CacheDifferences, Index)
+            end
+
+            return Index
         end
 
         local function _GetValueFromIndex(Index)
@@ -209,41 +188,40 @@ function RemoteWrapper:_GetOrCreateNodeState(Recipient: string)
     return NodeState
 end
 
-function RemoteWrapper:_SerializePackage(Data: any, Recipient: string): (buffer, {Instance})
+function RemoteWrapper:_SerializePackage(Data: any, Recipient: string): (buffer, any)
     local NodeState = self:_GetOrCreateNodeState(Recipient)
-    local Payload = NodeState.Definition:Serialize(Data, self._SerializeType)
+    local Result = NodeState.Definition:Serialize(Data, self._SerializeType)
     local Original = NodeState.CacheDifferences
 
     -- Separate out Instance values from other values and put in a separate table
     -- since only Roblox can serialize references to them. Substitute in original
     -- table with indexes to those Instance array values.
+
     local CacheDifferences = table.clone(Original)
     local InstanceRefs = {}
 
     for Index, Value in CacheDifferences do
         if (typeof(Value) == "Instance") then
-            table.insert(InstanceRefs, Value)
-            CacheDifferences[Index] = {_Ref = #InstanceRefs}
+            table.insert(InstanceRefs, Index)
+            CacheDifferences[Index] = #InstanceRefs
         end
     end
 
     table.clear(Original)
-
-    return PACKAGE:Serialize({
-        CacheDifferences = self._SerializableValidCacheType:Serialize(CacheDifferences);
-        Payload = Payload;
-    }), InstanceRefs
+    return Result, CacheDifferences, InstanceRefs
 end
 
 function RemoteWrapper:FireAllClients(Data: any)
     -- Potentially bad performance: has to be re-serialized with each server, client pair's cache since they will all be different.
-    -- Todo: look into "*" identifier instead. Requires appending tag onto data signifying it's a FireAllClients call?
+    -- Solution: implement a shared cache option between all nodes eventually, check if that's active, then it can just call the remote's FireAllClients.
     for _, Player in ActivePlayers do
         self:FireClient(Player, Data)
     end
 end
 
 function RemoteWrapper:FireClient(Recipient: Player, Data: any)
+    -- local Serialized, CacheDifferences = self:_SerializePackage(Data, Recipient.Name)
+    -- self._RemoteEvent:FireClient(Recipient, Serialized, CacheDifferences)
     self._RemoteEvent:FireClient(Recipient, self:_SerializePackage(Data, Recipient.Name))
 end
 
