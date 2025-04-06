@@ -209,25 +209,33 @@ function RemoteWrapper:_SerializePackage(Data: any, Recipient: string): (buffer,
     local Payload = NodeState.Definition:Serialize(Data, self._SerializeType)
     local Original = NodeState.CacheDifferences
 
-    -- Separate out Instance values from other values and put in a separate table
-    -- since only Roblox can serialize references to them. Substitute in original
+    -- Separates out Instance values from other values and put in a separate table
+    -- since only Roblox can serialize references to them. Substitutes in original
     -- table with indexes to those Instance array values.
-    local CacheDifferences = table.clone(Original)
+    local CacheDifferences = Original
     local InstanceRefs = {}
+    local Cloned = false
 
     for Index, Value in CacheDifferences do
-        if (typeof(Value) == "Instance") then
-            table.insert(InstanceRefs, Value)
-            CacheDifferences[Index] = {_Ref = #InstanceRefs}
+        if (typeof(Value) ~= "Instance") then
+            continue
         end
+
+        if (not Cloned) then
+            Cloned = true
+            CacheDifferences = table.clone(CacheDifferences)
+        end
+
+        table.insert(InstanceRefs, Value)
+        CacheDifferences[Index] = {_Ref = #InstanceRefs}
     end
 
-    table.clear(Original)
-
-    return Package:Serialize({
+    local FinalPackage = Package:Serialize({
         CacheDifferences = self._SerializableValidCacheType:Serialize(CacheDifferences);
         Payload = Payload;
-    }), InstanceRefs
+    })
+    table.clear(Original)
+    return FinalPackage, InstanceRefs
 end
 
 function RemoteWrapper:FireAllClients(Data: any)
@@ -250,6 +258,7 @@ function RemoteWrapper:Destroy()
     self._PlayerLeftConnection:Disconnect()
     self._RemoteConnection:Disconnect()
     self.OnServerEvent:DisconnectAll()
+
     RemoteHooks[self._RemoteID] = nil
 end
 

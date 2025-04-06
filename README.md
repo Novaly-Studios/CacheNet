@@ -18,3 +18,21 @@ These RemoteEvent wrappers are enforced to only be created and defined in one lo
   - Can then use this as Vapor's Actor-to-Actor communication layer
 - Time-based removal of cache items?
 - Luau type definitions
+
+## Examples
+
+```lua
+-- Client
+local Test = Remote.new("Test", TypeGuard.Array(TypeGuard.Cacheable(TypeGuard.String())))
+task.wait(2)
+Test:FireServer({"AAAA", "BBBB", "CCCC"})
+task.wait(1)
+Test:FireServer({"CCCC"})
+```
+
+```lua
+local Test = Remote.new("Test", TypeGuard.Array(TypeGuard.Cacheable(TypeGuard.String())))
+Test.OnServerEvent:Connect(function(...)
+    print("Received", ...)
+end)
+```
