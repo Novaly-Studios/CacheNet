@@ -6,8 +6,6 @@ A RemoteEvent wrapper for TypeGuard which integrates its ValueCache wrapper, cre
 - LRU: a least-recently-used cache which removes a value which has not been used recently when full, allowing commonly used values to have a longer lifetime in the cache.
 - Permanent: a dynamic-size cache which does not remove values, allowing all values to be stored in memory until the cache is garbage collected. Not generally recommended unless the only cached values are known values which can stay around for the session.
 
-These RemoteEvent wrappers are enforced to only be created and defined in one location per device to avoid competing type definitions and cache sizes.
-
 ## Todos
 
 - Option to have the cache synchronized between all devices instead of just pairs of devices

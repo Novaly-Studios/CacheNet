@@ -1,3 +1,6 @@
+--!optimize 2
+--!native
+
 --- Creates a least recently used cache, where newly created or accessed values
 --- are appended to the front of the queue and older, least recently used values
 --- are removed from the end of the queue. Less computationally fast and more

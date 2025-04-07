@@ -1,3 +1,6 @@
+--!optimize 2
+--!native
+
 --- Creates a circular cache, where new values are appended onto a fixed-size
 --- array and then rotated around when they hit the end, overwriting old
 --- values. More computationally fast and less memory intensive than the LRU

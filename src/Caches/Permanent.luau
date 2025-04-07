@@ -1,3 +1,6 @@
+--!optimize 2
+--!native
+
 --- Creates a simple value cache where every cached value persists
 --- until this cache is garbage collected. Not recommended unless
 --- performance is seriously necessary and all cacheable values are

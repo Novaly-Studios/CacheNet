@@ -1,3 +1,6 @@
+--!optimize 2
+--!native
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local RunService = game:GetService("RunService")
@@ -42,7 +45,7 @@ local InstanceRef = TypeGuard.Object({
     _Ref = DynamicUInt;
 }):Strict()
 local ValidTypeCache = TypeGuard.Or(
-    TypeGuard.String():MinLength(4):MaxLength(128),
+    TypeGuard.String():MinLength(3):MaxLength(128),
     TypeGuard.Instance()
 )
 local Buffer = TypeGuard.Buffer()
@@ -64,15 +67,23 @@ RemoteWrapper.Caches = {
 type Config = {
     ValidCacheType: SignatureTypeChecker?;
     SerializeType: ("Byte" | "Bit")?;
-    CacheClass: (typeof(CircularCache.new(1)) | typeof(LRUCache.new(1)))?;
+    CacheClass: (typeof(CircularCache.new(1)) | typeof(LRUCache.new(1)) | typeof(PermanentCache.new()))?;
     CacheSize: number?;
 }
 
 function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker?, Config: Config?)
+    local Existing = RemoteHooks[RemoteID]
+
+    if (Existing) then
+        assert(Definition == nil, "Attempt to deconfigure RemoteWrapper definition")
+        assert(Config == nil, "Attempt to deconfigure RemoteWrapper definition")
+        return Existing
+    end
+
     local RemoteEvent
 
     if (IsClient) then
-        RemoteEvent = CustomRemotes:WaitForChild(RemoteID)
+        RemoteEvent = assert(CustomRemotes:WaitForChild(RemoteID, 240), `RemoteWrapper {RemoteID}'s RemoteEvent wait timed out, check that it is registered on the server`)
     else
         RemoteEvent = Instance.new("RemoteEvent")
         RemoteEvent.Name = RemoteID
@@ -88,7 +99,7 @@ function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker?, 
         _SerializeType = (Config and Config.SerializeType or "Bit");
         _NodeToState = {};
         _RemoteEvent = RemoteEvent;
-        _CacheClass = (Config and Config.CacheClass or CircularCache);
+        _CacheClass = (Config and Config.CacheClass or LRUCache);
         _Definition = (Definition or Any);
         _CacheSize = (Config and Config.CacheSize or 128);
         _RemoteID = RemoteID;
@@ -108,14 +119,16 @@ function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker?, 
         self:_ReceiveEvent(Package, Refs, self:_GetOrCreateNodeState(SenderID), SenderID)
     end))
 
-    assert(RemoteHooks[RemoteID] == nil, `Remote ID {RemoteID} already exists`)
     RemoteHooks[RemoteID] = self
     return self
 end
 
 function RemoteWrapper:_ReceiveEvent(Data, Refs, SenderNodeState, SenderID)
-    local Pair = Package:Deserialize(Data)
-        local CacheDifferences = self._SerializableValidCacheType:Deserialize(Pair.CacheDifferences)
+    debug.profilebegin(`Deserialize-{self._RemoteID}`)
+
+    local SerializeType = self._SerializeType
+    local Pair = Package:Deserialize(Data, SerializeType, true)
+        local CacheDifferences = self._SerializableValidCacheType:Deserialize(Pair.CacheDifferences, SerializeType, true)
         local Payload = Pair.Payload
 
     for Key, Value in CacheDifferences do
@@ -133,9 +146,10 @@ function RemoteWrapper:_ReceiveEvent(Data, Refs, SenderNodeState, SenderID)
     end
 
     SenderNodeState.BeginReceive(CacheDifferences)
-    Payload = SenderNodeState.Definition:Deserialize(Payload, self._SerializeType)
+    Payload = SenderNodeState.Definition:Deserialize(Payload, SerializeType)
 
     if (IsClient) then
+        debug.profileend()
         self.OnClientEvent:Fire(Payload)
         return
     end
@@ -143,7 +157,10 @@ function RemoteWrapper:_ReceiveEvent(Data, Refs, SenderNodeState, SenderID)
     local Player = Players:FindFirstChild(SenderID)
 
     if (Player) then
+        debug.profileend()
         self.OnServerEvent:Fire(Player, Payload)
+    else
+        debug.profileend()
     end
 end
 
@@ -206,14 +223,18 @@ function RemoteWrapper:_GetOrCreateNodeState(Recipient: string)
 end
 
 function RemoteWrapper:_SerializePackage(Data: any, Recipient: string): (buffer, {Instance})
+    debug.profilebegin(`Serialize-{self._RemoteID}`)
+
+    local SerializeType = self._SerializeType
     local NodeState = self:_GetOrCreateNodeState(Recipient)
-    local Payload = NodeState.Definition:Serialize(Data, self._SerializeType)
+    local Payload = NodeState.Definition:Serialize(Data, SerializeType)
     local Original = NodeState.CacheDifferences
 
     -- Separates out Instance values from other values and put in a separate table
     -- since only Roblox can serialize references to them. Substitutes in original
     -- table with indexes to those Instance array values.
     local CacheDifferences = Original
+
     local InstanceRefs = {}
     local Cloned = false
 
@@ -231,11 +252,15 @@ function RemoteWrapper:_SerializePackage(Data: any, Recipient: string): (buffer,
         CacheDifferences[Index] = {_Ref = #InstanceRefs}
     end
 
+    local FinalCacheDifferences = self._SerializableValidCacheType:Serialize(CacheDifferences, SerializeType, true)
     local FinalPackage = Package:Serialize({
-        CacheDifferences = self._SerializableValidCacheType:Serialize(CacheDifferences);
+        CacheDifferences = FinalCacheDifferences;
         Payload = Payload;
-    })
+    }, SerializeType, true)
+
     table.clear(Original)
+    debug.profileend()
+
     return FinalPackage, InstanceRefs
 end
 
