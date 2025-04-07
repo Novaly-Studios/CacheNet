@@ -11,13 +11,13 @@ These RemoteEvent wrappers are enforced to only be created and defined in one lo
 ## Todos
 
 - Option to have the cache synchronized between all devices instead of just pairs of devices
-- Separate Instances captured vs non-Instances for 2nd and 3rd RemoteEvent args, use TypeGuard to serialize the latter
 - Synchronized dictionary compression (*should natively integrate with the TypeGuard buffer compression cache without any further action when that is finished)
 - Client-to-client communication layer?
   - Abstract away from RemoteEvents and have a RemoteEvent layer sitting above
   - Can then use this as Vapor's Actor-to-Actor communication layer
 - Time-based removal of cache items?
 - Luau type definitions
+- Unreliable remotes / split into 900 byte chunks
 
 ## Examples
 
