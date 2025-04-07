@@ -50,6 +50,7 @@ local Package = TypeGuard.Object({
     CacheDifferences = Buffer;
     Payload = Buffer;
 }):Strict()
+local Any = TypeGuard.Any()
 
 local RemoteWrapper = {}
 RemoteWrapper.__index = RemoteWrapper
@@ -67,7 +68,7 @@ type Config = {
     CacheSize: number?;
 }
 
-function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker, Config: Config?)
+function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker?, Config: Config?)
     local RemoteEvent
 
     if (IsClient) then
@@ -88,7 +89,7 @@ function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker, C
         _NodeToState = {};
         _RemoteEvent = RemoteEvent;
         _CacheClass = (Config and Config.CacheClass or CircularCache);
-        _Definition = Definition;
+        _Definition = (Definition or Any);
         _CacheSize = (Config and Config.CacheSize or 128);
         _RemoteID = RemoteID;
 
