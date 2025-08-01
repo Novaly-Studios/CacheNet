@@ -18,16 +18,6 @@ local TypeGuard = require(script.Parent.TypeGuard)
 
 local XSignal = require(script.Parent.XSignal)
 
-local ActivePlayers = {} do
-    Players.PlayerAdded:Connect(function(Player)
-        table.insert(ActivePlayers, Player)
-    end)
-
-    Players.PlayerRemoving:Connect(function(Player)
-        table.remove(ActivePlayers, table.find(ActivePlayers, Player))
-    end)
-end
-
 local CustomRemotes = ReplicatedStorage:FindFirstChild("CustomRemotes")
 
 if (IsClient) then
@@ -55,9 +45,17 @@ local Package = TypeGuard.Object({
 }):Strict()
 local Any = TypeGuard.Any()
 
+-- Key principle here: each node / device contains a table of caches corresponding to other devices, effectively conceptualized
+-- as DeviceA: (DeviceA->DeviceB {}, DeviceB->DeviceA {}), DeviceB: (DeviceB->DeviceA {}, DeviceA->DeviceB {}). That prevents a
+-- shared mutable cache between each device pair which would require lockstep networking, but also means the first time data is
+-- sent, there might be non-cached duplication. For instance, DeviceA -> DeviceB sends "Hello", DeviceB -> DeviceA sends "Hello".
+-- DeviceA's DeviceB cache will update with "Hello", and DeviceB's DeviceA cache will update with "Hello". The next time DeviceA
+-- sends "Hello", it will send something cached instead, likewise if DeviceB sends "Hello" to DeviceA. But both will have initially
+-- sent a duplicated "Hello" string.
+
 local RemoteWrapper = {}
 RemoteWrapper.__index = RemoteWrapper
-RemoteWrapper.TypeGuard = TypeGuard -- Better for the user to implement these using 
+RemoteWrapper.TypeGuard = TypeGuard -- Better for user to define types using the version of TypeGuard this library uses to prevent incompatibility.
 RemoteWrapper.Caches = {
     Permanent = PermanentCache;
     Circular = CircularCache;
@@ -66,28 +64,18 @@ RemoteWrapper.Caches = {
 
 type Config = {
     ValidCacheType: SignatureTypeChecker?;
-    SerializeType: ("Byte" | "Bit")?;
+    SerializeType: (() -> typeof(TypeGuard.Serializers.Byte()));
     CacheClass: (typeof(CircularCache.new(1)) | typeof(LRUCache.new(1)) | typeof(PermanentCache.new()))?;
     CacheSize: number?;
 }
 
-function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker?, Config: Config?)
-    local Existing = RemoteHooks[RemoteID]
+function RemoteWrapper.new(RemoteEvent: RemoteEvent, Definition: SignatureTypeChecker?, Config: Config?): typeof(RemoteWrapper)
+    local Existing = RemoteHooks[RemoteEvent]
 
     if (Existing) then
-        assert(Definition == nil, "Attempt to deconfigure RemoteWrapper definition")
-        assert(Config == nil, "Attempt to deconfigure RemoteWrapper definition")
+        assert(Definition == nil, "Attempt to change existing RemoteWrapper definition")
+        assert(Config == nil, "Attempt to reconfigure RemoteWrapper")
         return Existing
-    end
-
-    local RemoteEvent
-
-    if (IsClient) then
-        RemoteEvent = assert(CustomRemotes:WaitForChild(RemoteID, 240), `RemoteWrapper {RemoteID}'s RemoteEvent wait timed out, check that it is registered on the server`)
-    else
-        RemoteEvent = Instance.new("RemoteEvent")
-        RemoteEvent.Name = RemoteID
-        RemoteEvent.Parent = CustomRemotes
     end
 
     local Event = XSignal.XSignal.new()
@@ -96,13 +84,13 @@ function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker?, 
     local self = setmetatable({
         _SerializableValidCacheType = TypeGuard.Array(TypeGuard.Or(ValidCacheType, DynamicUInt, InstanceRef));
         _ValidCacheType = ValidCacheType;
-        _SerializeType = (Config and Config.SerializeType or "Bit");
+        _SerializeType = (Config and Config.SerializeType or TypeGuard.Serializers.Bit);
         _NodeToState = {};
         _RemoteEvent = RemoteEvent;
         _CacheClass = (Config and Config.CacheClass or LRUCache);
         _Definition = (Definition or Any);
         _CacheSize = (Config and Config.CacheSize or 128);
-        _RemoteID = RemoteID;
+        _RemoteID = RemoteEvent.Name;
 
         OnClientEvent = Event;
         OnServerEvent = Event;
@@ -119,7 +107,6 @@ function RemoteWrapper.new(RemoteID: string, Definition: SignatureTypeChecker?, 
         self:_ReceiveEvent(Package, Refs, self:_GetOrCreateNodeState(SenderID), SenderID)
     end))
 
-    RemoteHooks[RemoteID] = self
     return self
 end
 
@@ -127,8 +114,8 @@ function RemoteWrapper:_ReceiveEvent(Data, Refs, SenderNodeState, SenderID)
     debug.profilebegin(`Deserialize-{self._RemoteID}`)
 
     local SerializeType = self._SerializeType
-    local Pair = Package:Deserialize(Data, SerializeType, true)
-        local CacheDifferences = self._SerializableValidCacheType:Deserialize(Pair.CacheDifferences, SerializeType, true)
+    local Pair = Package:Deserialize(Data, SerializeType(), true)
+        local CacheDifferences = self._SerializableValidCacheType:Deserialize(Pair.CacheDifferences, SerializeType(), true)
         local Payload = Pair.Payload
 
     for Key, Value in CacheDifferences do
@@ -146,7 +133,7 @@ function RemoteWrapper:_ReceiveEvent(Data, Refs, SenderNodeState, SenderID)
     end
 
     SenderNodeState.BeginReceive(CacheDifferences)
-    Payload = SenderNodeState.Definition:Deserialize(Payload, SerializeType)
+    Payload = SenderNodeState.Definition:Deserialize(Payload, SerializeType())
 
     if (IsClient) then
         debug.profileend()
@@ -157,11 +144,10 @@ function RemoteWrapper:_ReceiveEvent(Data, Refs, SenderNodeState, SenderID)
     local Player = Players:FindFirstChild(SenderID)
 
     if (Player) then
-        debug.profileend()
         self.OnServerEvent:Fire(Player, Payload)
-    else
-        debug.profileend()
     end
+
+    debug.profileend()
 end
 
 function RemoteWrapper:_GetOrCreateNodeState(Recipient: string)
@@ -215,6 +201,7 @@ function RemoteWrapper:_GetOrCreateNodeState(Recipient: string)
             CacheDifferences = CacheDifferences;
             BeginReceive = BeginReceive;
             Definition = TypeGuard.ValueCache(self._Definition):PersistentCache(_GetIndexFromValue, _GetValueFromIndex);
+            Cache = Cache;
         }
         NodeToState[Recipient] = NodeState
     end
@@ -227,14 +214,13 @@ function RemoteWrapper:_SerializePackage(Data: any, Recipient: string): (buffer,
 
     local SerializeType = self._SerializeType
     local NodeState = self:_GetOrCreateNodeState(Recipient)
-    local Payload = NodeState.Definition:Serialize(Data, SerializeType)
+    local Payload = NodeState.Definition:Serialize(Data, SerializeType())
     local Original = NodeState.CacheDifferences
 
     -- Separates out Instance values from other values and put in a separate table
     -- since only Roblox can serialize references to them. Substitutes in original
     -- table with indexes to those Instance array values.
     local CacheDifferences = Original
-
     local InstanceRefs = {}
     local Cloned = false
 
@@ -252,11 +238,11 @@ function RemoteWrapper:_SerializePackage(Data: any, Recipient: string): (buffer,
         CacheDifferences[Index] = {_Ref = #InstanceRefs}
     end
 
-    local FinalCacheDifferences = self._SerializableValidCacheType:Serialize(CacheDifferences, SerializeType, true)
+    local FinalCacheDifferences = self._SerializableValidCacheType:Serialize(CacheDifferences, SerializeType(), true)
     local FinalPackage = Package:Serialize({
         CacheDifferences = FinalCacheDifferences;
         Payload = Payload;
-    }, SerializeType, true)
+    }, SerializeType(), true)
 
     table.clear(Original)
     debug.profileend()
@@ -265,11 +251,7 @@ function RemoteWrapper:_SerializePackage(Data: any, Recipient: string): (buffer,
 end
 
 function RemoteWrapper:FireAllClients(Data: any)
-    -- Potentially bad performance: has to be re-serialized with each server, client pair's cache since they will all be different.
-    -- Todo: look into "*" identifier instead. Requires appending tag onto data signifying it's a FireAllClients call?
-    for _, Player in ActivePlayers do
-        self:FireClient(Player, Data)
-    end
+    self._RemoteEvent:FireAllClients(self:_SerializePackage(Data, "*"))
 end
 
 function RemoteWrapper:FireClient(Recipient: Player, Data: any)
@@ -284,8 +266,6 @@ function RemoteWrapper:Destroy()
     self._PlayerLeftConnection:Disconnect()
     self._RemoteConnection:Disconnect()
     self.OnServerEvent:DisconnectAll()
-
-    RemoteHooks[self._RemoteID] = nil
 end
 
 return RemoteWrapper
